@@ -104,12 +104,8 @@ namespace zmqpp
 
     void loop::remove(socket_t const& socket)
     {
-        if (dispatching_)
-        {
-            rebuild_poller_ = true;
-            sockRemoveLater_.push_back(&socket);
-            return;
-        }
+        /* Unlike timers and raw socket file handles, _references_ to sockets may be invalidated "later". In this case,
+         * remove must update the poller immediately while the reference is valid! */
         items_.erase(std::remove_if(items_.begin(), items_.end(), [&socket](const PollItemCallablePair & pair) -> bool
         {
             const zmq_pollitem_t &item = pair.first;
@@ -209,12 +205,9 @@ namespace zmqpp
     {
         for (raw_socket_t fd : fdRemoveLater_)
             remove(fd);
-        for (const socket_t *sock : sockRemoveLater_)
-            remove(*sock);
         for (const timer_id_t & timer : timerRemoveLater_)
             remove(timer);
         fdRemoveLater_.clear();
-        sockRemoveLater_.clear();
         timerRemoveLater_.clear();
     }
 
