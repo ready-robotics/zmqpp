@@ -156,8 +156,10 @@ namespace zmqpp
         long tickless();
 
         poller poller_;
-        bool dispatching_;
+        bool dispatching_timers_;
+        bool dispatching_poller_;
         bool rebuild_poller_;
+        bool abort_poller_;
     };
 
 }
