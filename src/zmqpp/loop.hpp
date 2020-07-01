@@ -129,11 +129,13 @@ namespace zmqpp
         typedef std::pair<std::unique_ptr<timer_t>, Callable> TimerItemCallablePair;
         static bool TimerItemCallablePairComp(const TimerItemCallablePair &lhs, const TimerItemCallablePair &rhs);
 
-        std::vector<PollItemCallablePair> items_;
+        /* Changing this to a std::list ensures that iterators are not invalidated during execution of
+         * start_handle_poller(). This allows pending events to be processed even if new events are added or removed
+         * during callback events. */
+        std::list<PollItemCallablePair> items_;
         std::list<TimerItemCallablePair> timers_;
-        std::vector<const socket_t *> sockRemoveLater_;
-        std::vector<raw_socket_t> fdRemoveLater_;
         std::vector<timer_id_t> timerRemoveLater_;
+        std::vector<raw_socket_t> fdRemoveLater_;
 
 
         void add(const zmq_pollitem_t &item, Callable callable);
@@ -154,8 +156,10 @@ namespace zmqpp
         long tickless();
 
         poller poller_;
-        bool dispatching_;
+        bool dispatching_timers_;
+        bool dispatching_poller_;
         bool rebuild_poller_;
+        bool abort_poller_;
     };
 
 }

@@ -10,6 +10,7 @@
 #include <boost/test/unit_test.hpp>
 #include <thread>
 #include <exception>
+#include <memory>
 
 #include "zmqpp/context.hpp"
 #include "zmqpp/message.hpp"
@@ -199,6 +200,69 @@ BOOST_AUTO_TEST_CASE(remove_socket_in_handler)
     };
 
     loop.add(sub, std::bind(callable, &test1, 1));
+    loop.add(sub2, std::bind(callable, &test2, 2));
+
+    loop.add(std::chrono::milliseconds(100), 1, end_loop);
+    BOOST_CHECK_NO_THROW(loop.start());
+
+    BOOST_CHECK_EQUAL(1, test1);
+    BOOST_CHECK_EQUAL(2, test2);
+
+    test1 = test2 = 0;
+
+    BOOST_CHECK(pub.send("hello", zmqpp::socket::send_more));
+    BOOST_CHECK(pub.send("hello world!"));
+
+    loop.add(std::chrono::milliseconds(100), 1, end_loop);
+    BOOST_CHECK_NO_THROW(loop.start());
+
+    BOOST_CHECK_EQUAL(0, test1);
+    BOOST_CHECK_EQUAL(2, test2);
+}
+
+BOOST_AUTO_TEST_CASE(destroy_socket_in_handler)
+{
+    /* Destroys a socket while dispatching poll callbacks. A reference to the
+     * removed socket used to be stored for later removal but that resulted in
+     * memory violations if the socket reference was invalidated. */
+    zmqpp::context context;
+
+    zmqpp::socket pub(context, zmqpp::socket_type::pub);
+    pub.bind("inproc://test");
+
+    /* This looks contrived, but higher level objects might delete other
+     * sockets in the loop during a callback. */
+    std::unique_ptr<zmqpp::socket> sub(new zmqpp::socket(context, zmqpp::socket_type::sub));
+    zmqpp::socket &sub_ref = *sub.get();
+    sub_ref.connect("inproc://test");
+    sub_ref.subscribe("hello");
+
+    zmqpp::socket sub2(context, zmqpp::socket_type::sub);
+    sub2.connect("inproc://test");
+    sub2.subscribe("hello");
+
+    BOOST_CHECK(pub.send("hello", zmqpp::socket::send_more));
+    BOOST_CHECK(pub.send("hello world!"));
+
+    zmqpp::loop loop;
+    auto end_loop = []() -> bool { return false; };
+
+    int test1 = 0;
+    int test2 = 0;
+    auto callable = [&](int *value_to_update, int val) -> bool
+    {
+        if (val == 1)
+        {
+            /* Remove and delete the socket while dispatching poll callbacks. */
+            loop.remove(sub_ref);
+            sub.reset();
+        }
+
+        *value_to_update = val;
+        return true;
+    };
+
+    loop.add(sub_ref, std::bind(callable, &test1, 1));
     loop.add(sub2, std::bind(callable, &test2, 2));
 
     loop.add(std::chrono::milliseconds(100), 1, end_loop);

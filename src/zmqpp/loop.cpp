@@ -21,8 +21,10 @@
 namespace zmqpp
 {
     loop::loop() :
-    dispatching_(false),
-    rebuild_poller_(false)
+    dispatching_timers_(false),
+    dispatching_poller_(false),
+    rebuild_poller_(false),
+    abort_poller_(false)
     {
     }
 
@@ -92,7 +94,7 @@ namespace zmqpp
 
     void loop::remove(timer_id_t const timer)
     {
-        if(dispatching_)
+        if(dispatching_timers_ || dispatching_poller_)
         {
             timerRemoveLater_.push_back(timer);
             return;
@@ -104,12 +106,8 @@ namespace zmqpp
 
     void loop::remove(socket_t const& socket)
     {
-        if (dispatching_)
-        {
-            rebuild_poller_ = true;
-            sockRemoveLater_.push_back(&socket);
-            return;
-        }
+        /* Unlike timers and raw socket file handles, _references_ to sockets may be invalidated "later". In this case,
+         * remove must update the poller immediately while the reference is valid. */
         items_.erase(std::remove_if(items_.begin(), items_.end(), [&socket](const PollItemCallablePair & pair) -> bool
         {
             const zmq_pollitem_t &item = pair.first;
@@ -120,11 +118,21 @@ namespace zmqpp
             return false;
         }), items_.end());
         poller_.remove(socket);
+
+        if (dispatching_timers_) {
+            /* If a socket was removed because of a timer, rebuild the poller */
+            rebuild_poller_ = true;
+        }
+        else if (dispatching_poller_) {
+            /* If a socket was removed while servicing the poller, the iterator used in the start_handle_poller() may be
+             * invalidated; abort start_handle_poller() early to avoid that edge-case. */
+            abort_poller_ = true;
+        }
     }
 
     void loop::remove(raw_socket_t const descriptor)
     {
-        if (dispatching_)
+        if (dispatching_timers_ || dispatching_poller_)
         {
             rebuild_poller_ = true;
             fdRemoveLater_.push_back(descriptor);
@@ -146,12 +154,13 @@ namespace zmqpp
     {
         while(1) {
             rebuild_poller_ = false;
+            abort_poller_ = false;
             flush_remove_later();
             bool poll_rc = poller_.poll(tickless());
 
-            dispatching_ = true;
+            dispatching_timers_ = true;
             bool continue_looping = start_handle_timers();
-            dispatching_ = false;
+            dispatching_timers_ = false;
 
             if(!continue_looping)
                 break;
@@ -159,10 +168,10 @@ namespace zmqpp
             if(rebuild_poller_)
                 continue;
 
-            dispatching_ = true;
+            dispatching_poller_ = true;
             if(poll_rc)
                 continue_looping = start_handle_poller();
-            dispatching_ = false;
+            dispatching_poller_ = false;
 
             if(!continue_looping)
                 break;
@@ -198,9 +207,17 @@ namespace zmqpp
         {
             const zmq_pollitem_t &pollitem = pair.first;
 
-            if (poller_.has_input(pollitem) || poller_.has_error(pollitem) || poller_.has_output(pollitem))
-                if(!pair.second())
+            if (poller_.has_input(pollitem) || poller_.has_error(pollitem) || poller_.has_output(pollitem)) {
+                if (!pair.second()) {
                     return false;
+                }
+
+                if (abort_poller_) {
+                    /* An event was added or removed from the list during the callback which may have invalidated the
+                     * iterators above. Abort and rebuild the poller to ensure that the loop is ok. */
+                    break;
+                }
+            }
         }
         return true;
     }
@@ -209,12 +226,9 @@ namespace zmqpp
     {
         for (raw_socket_t fd : fdRemoveLater_)
             remove(fd);
-        for (const socket_t *sock : sockRemoveLater_)
-            remove(*sock);
         for (const timer_id_t & timer : timerRemoveLater_)
             remove(timer);
         fdRemoveLater_.clear();
-        sockRemoveLater_.clear();
         timerRemoveLater_.clear();
     }
 
